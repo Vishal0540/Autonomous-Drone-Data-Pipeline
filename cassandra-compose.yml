@@ -1,0 +1,14 @@
+version: '3'
+services:
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+  dse-studio:
+    image: datastax/dse-studio
+    container_name: dse-studio
+    ports:
+      - "9091:9091"
+    depends_on:
+      - cassandra
