@@ -37,11 +37,10 @@ class RecentActivityWindowFunction(ProcessWindowFunction):
                 latitude=telemetry.latitude,
                 longitude=telemetry.longitude,
                 altitude=telemetry.altitude,
-                datetime=datetime.datetime.fromtimestamp(telemetry.timestamp_utc).strftime('%Y-%m-%d %H:%M:%S'),
+                timestamp_utc=telemetry.timestamp_utc,
                 battery_percentage=telemetry.battery_percentage,
                 horizontal_speed=telemetry.horizontal_speed_mps,
                 vertical_speed=telemetry.vertical_speed_mps,
-                timestamp=telemetry.timestamp_utc
             ) for idx, telemetry in enumerate(recent_activities)
         ]
             
@@ -49,7 +48,8 @@ class RecentActivityWindowFunction(ProcessWindowFunction):
             drone_id=key,
             recent_points=activity_points,
             avg_vertical_speed=round(avg_vertical_speed, 2),
-            avg_horizontal_speed=round(avg_horizontal_speed, 2)
+            avg_horizontal_speed=round(avg_horizontal_speed, 2),
+            last_updated=recent_activities[0].timestamp_utc
         )
 
         print(recent_activity.model_dump())

@@ -6,14 +6,14 @@ class ActivityPoint(BaseModel):
     latitude: float
     longitude: float
     altitude: float
-    datetime: str
+    timestamp_utc: int
     battery_percentage: float
     horizontal_speed: float
     vertical_speed: float
-    timestamp: int
 
 class RecentActivity(BaseModel):
     drone_id: int
     recent_points: List[ActivityPoint]
     avg_vertical_speed: float
     avg_horizontal_speed: float
+    last_updated: int
