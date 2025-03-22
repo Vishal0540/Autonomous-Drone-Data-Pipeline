@@ -5,13 +5,15 @@ import math
 import time
 import uuid
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime
-
+import signal
 
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 
+# Add this import for better error handling
+from kafka.errors import KafkaError, KafkaTimeoutError
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -146,88 +148,115 @@ def insert_delivery_to_db(delivery_order):
         session.add(db_delivery)
 
 def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_alt=100, include_hardware_errors=False, dry_run=False):
-    """
-    Simulate and stream drone telemetry data using the delivery order.
-    
-    The telemetry data includes a linear flight path from the pickup
-    coordinate to the delivery coordinate with horizontal and vertical speed components.
-    
-    If hardware errors are included, the drone will stop in the middle of the journey.
-    If dry_run is True, data will only be printed, not sent to Kafka.
-    """
-    pickup_lat, pickup_lon = delivery_order.pickup_latitude, delivery_order.pickup_longitude
-    delivery_lat, delivery_lon = delivery_order.delivery_latitude, delivery_order.delivery_longitude
-    trip_distance_km = delivery_order.trip_distance_km
-    
-    # Base speed used for overall time calculation
-    base_speed = drone_speed
-    
-    # Compute total flight time based on constant speed (convert km to m)
-    flight_time = int((trip_distance_km * 1000) / base_speed)
-    if flight_time == 0:
-        flight_time = 1
+    try:
+        """
+        Simulate and stream drone telemetry data using the delivery order.
+        
+        The telemetry data includes a linear flight path from the pickup
+        coordinate to the delivery coordinate with horizontal and vertical speed components.
+        
+        If hardware errors are included, the drone will stop in the middle of the journey.
+        If dry_run is True, data will only be printed, not sent to Kafka.
+        """
+        pickup_lat, pickup_lon = delivery_order.pickup_latitude, delivery_order.pickup_longitude
+        delivery_lat, delivery_lon = delivery_order.delivery_latitude, delivery_order.delivery_longitude
+        trip_distance_km = delivery_order.trip_distance_km
+        
+        # Base speed used for overall time calculation
+        base_speed = drone_speed
+        
+        # Compute total flight time based on constant speed (convert km to m)
+        flight_time = int((trip_distance_km * 1000) / base_speed)
+        if flight_time == 0:
+            flight_time = 1
 
-    battery = 100.0  # initial battery percentage
-    payload_weight = delivery_order.package_weight_kg
-    operational_status = OperationalStatus.IN_DELIVERY
-    ascend_time = flight_time * 0.1
-    descend_time = flight_time * 0.1
-    cruise_time = flight_time - ascend_time - descend_time
-    drone_id = delivery_order.assigned_drone_id
-    
-    # Randomly decide if this flight will have a hardware error
-    hardware_error = None
-    if include_hardware_errors:
-        hardware_error = random.choice(list(HardwareError))
-    
-    # Calculate middle point of flight
-    middle_point = flight_time // 2
-    
-    # Store previous values to calculate speeds
-    prev_alt = 0
-    prev_lat = pickup_lat
-    prev_lon = pickup_lon
-    prev_time = 0
-    
-    # Stream telemetry data at each sample point
-    for t in range(0, flight_time + 1, sample_rate):
-        fraction = t / flight_time
-        # Linear interpolation between pickup and delivery coordinates
-        current_lat = pickup_lat + (delivery_lat - pickup_lat) * fraction
-        current_lon = pickup_lon + (delivery_lon - pickup_lon) * fraction
+        battery = 100.0  # initial battery percentage
+        payload_weight = delivery_order.package_weight_kg
+        operational_status = OperationalStatus.IN_DELIVERY
+        ascend_time = flight_time * 0.1
+        descend_time = flight_time * 0.1
+        cruise_time = flight_time - ascend_time - descend_time
+        drone_id = delivery_order.assigned_drone_id
         
-        # Altitude: simulate ascent, cruise, and descent
-        if t <= ascend_time and ascend_time > 0:
-            alt = (max_alt / ascend_time) * t
-            # During ascent, horizontal speed is lower, vertical speed is higher
-            horizontal_speed = base_speed * (0.5 + 0.5 * (t / ascend_time))
-        elif t >= flight_time - descend_time and descend_time > 0:
-            alt = max_alt - (max_alt / descend_time) * (t - (flight_time - descend_time))
-            # During descent, horizontal speed is lower, vertical speed is higher (negative)
-            horizontal_speed = base_speed * (0.5 + 0.5 * (1 - (t - (flight_time - descend_time)) / descend_time))
-        else:
-            alt = max_alt
-            # During cruise, horizontal speed fluctuates, vertical speed is near zero
-            horizontal_speed = base_speed * random.uniform(0.9, 1.3)
+        # Randomly decide if this flight will have a hardware error
+        hardware_error = None
+        if include_hardware_errors:
+            hardware_error = random.choice(list(HardwareError))
         
-        # Calculate vertical speed based on altitude change (m/s)
-        if t > 0:
-            time_delta = t - prev_time
-            vertical_speed = (alt - prev_alt) / time_delta
-        else:
-            # First point - estimate from initial ascent rate
-            vertical_speed = max_alt / ascend_time if ascend_time > 0 else 0
+        # Calculate middle point of flight
+        middle_point = flight_time // 2
         
-        # Add some realistic variations to vertical speed
-        vertical_speed += random.uniform(-0.5, 0.5)
+        # Store previous values to calculate speeds
+        prev_alt = 0
+        prev_lat = pickup_lat
+        prev_lon = pickup_lon
+        prev_time = 0
         
-        # Simulate battery drain linearly over the flight
-        battery = max(0.0, battery - (20 / flight_time))
-        
-        # If hardware error is enabled and we've reached the middle point, stop the flight
-        if include_hardware_errors and t >= middle_point:
-            operational_status = OperationalStatus.HARDWARE_ALERT
+        # Stream telemetry data at each sample point
+        for t in range(0, flight_time + 1, sample_rate):
+            fraction = t / flight_time
+            # Linear interpolation between pickup and delivery coordinates
+            current_lat = pickup_lat + (delivery_lat - pickup_lat) * fraction
+            current_lon = pickup_lon + (delivery_lon - pickup_lon) * fraction
             
+            # Altitude: simulate ascent, cruise, and descent
+            if t <= ascend_time and ascend_time > 0:
+                alt = (max_alt / ascend_time) * t
+                # During ascent, horizontal speed is lower, vertical speed is higher
+                horizontal_speed = base_speed * (0.5 + 0.5 * (t / ascend_time))
+            elif t >= flight_time - descend_time and descend_time > 0:
+                alt = max_alt - (max_alt / descend_time) * (t - (flight_time - descend_time))
+                # During descent, horizontal speed is lower, vertical speed is higher (negative)
+                horizontal_speed = base_speed * (0.5 + 0.5 * (1 - (t - (flight_time - descend_time)) / descend_time))
+            else:
+                alt = max_alt
+                # During cruise, horizontal speed fluctuates, vertical speed is near zero
+                horizontal_speed = base_speed * random.uniform(0.9, 1.3)
+            
+            # Calculate vertical speed based on altitude change (m/s)
+            if t > 0:
+                time_delta = t - prev_time
+                vertical_speed = (alt - prev_alt) / time_delta
+            else:
+                # First point - estimate from initial ascent rate
+                vertical_speed = max_alt / ascend_time if ascend_time > 0 else 0
+            
+            # Add some realistic variations to vertical speed
+            vertical_speed += random.uniform(-0.5, 0.5)
+            
+            # Simulate battery drain linearly over the flight
+            battery = max(0.0, battery - (20 / flight_time))
+            
+            # If hardware error is enabled and we've reached the middle point, stop the flight
+            if include_hardware_errors and t >= middle_point:
+                operational_status = OperationalStatus.HARDWARE_ALERT
+                
+                telemetry = DroneTelemetry(
+                    drone_id=int(drone_id),
+                    battery_percentage=round(battery, 2),
+                    latitude=current_lat,
+                    longitude=current_lon,
+                    altitude=round(alt, 2),
+                    operational_status=operational_status,
+                    hardware_error=hardware_error,
+                    payload_weight_kg=payload_weight,
+                    timestamp_utc=get_utc_timestamp_int(),
+                    horizontal_speed_mps=0,
+                    vertical_speed_mps=0,
+                    active_order_id=delivery_order.delivery_order_id
+                )
+                print(telemetry.model_dump_json())
+                if not dry_run:
+                    future = producer.send(topic_name, telemetry.model_dump_json())
+                break
+            
+            operational_status = OperationalStatus.IN_DELIVERY
+                
+            if t == flight_time:
+                operational_status = OperationalStatus.IDLE
+                horizontal_speed = 0  # Landed, so speed is zero
+                vertical_speed = 0
+
             telemetry = DroneTelemetry(
                 drone_id=int(drone_id),
                 battery_percentage=round(battery, 2),
@@ -235,50 +264,28 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
                 longitude=current_lon,
                 altitude=round(alt, 2),
                 operational_status=operational_status,
-                hardware_error=hardware_error,
+                hardware_error=None,
                 payload_weight_kg=payload_weight,
                 timestamp_utc=get_utc_timestamp_int(),
-                horizontal_speed_mps=0,
-                vertical_speed_mps=0,
-                active_order_id=delivery_order.delivery_order_id
+                horizontal_speed_mps=round(horizontal_speed, 2),
+                vertical_speed_mps=round(vertical_speed, 2),
+                active_order_id=delivery_order.delivery_order_id if operational_status == OperationalStatus.IN_DELIVERY else ""
             )
             print(telemetry.model_dump_json())
+
             if not dry_run:
-                future = producer.send(topic_name, telemetry.model_dump())
-            break
-        
-        operational_status = OperationalStatus.IN_DELIVERY
-            
-        if t == flight_time:
-            operational_status = OperationalStatus.IDLE
-            horizontal_speed = 0  # Landed, so speed is zero
-            vertical_speed = 0
-
-        telemetry = DroneTelemetry(
-            drone_id=int(drone_id),
-            battery_percentage=round(battery, 2),
-            latitude=current_lat,
-            longitude=current_lon,
-            altitude=round(alt, 2),
-            operational_status=operational_status,
-            hardware_error=None,
-            payload_weight_kg=payload_weight,
-            timestamp_utc=get_utc_timestamp_int(),
-            horizontal_speed_mps=round(horizontal_speed, 2),
-            vertical_speed_mps=round(vertical_speed, 2),
-            active_order_id=delivery_order.delivery_order_id if operational_status == OperationalStatus.IN_DELIVERY else ""
-        )
-        print(telemetry.model_dump_json())
-
-        if not dry_run:
-            future = producer.send(topic_name, telemetry.model_dump())
-            time.sleep(sample_rate)
-            
-        # Store current values for next iteration
-        prev_alt = alt
-        prev_lat = current_lat
-        prev_lon = current_lon
-        prev_time = t
+                print(topic_name)
+                input("Press Enter to continue")
+                future = producer.send(topic_name, telemetry.model_dump_json())
+                time.sleep(sample_rate)
+                
+            # Store current values for next iteration
+            prev_alt = alt
+            prev_lat = current_lat
+            prev_lon = current_lon
+            prev_time = t
+    except Exception as e:
+        print(f"Error in stream_drone_telemetry: {e}")
 
 def generate_charging_telemetry(drone_id, lat, lon, duration=60, sample_rate=5, dry_run=False):
     print(f"Generating charging telemetry for drone_{drone_id}")
@@ -350,17 +357,36 @@ def generate_maintenance_telemetry(drone_id, lat, lon, duration=120, sample_rate
             future = producer.send(topic_name, telemetry.model_dump())
             time.sleep(sample_rate)
 
+# Add these global variables at the top level
+
+
+def signal_handler(sig, frame):
+    """Enhanced signal handler for graceful shutdown"""
+    print("\nShutting down gracefully...")
+    
+    
+    
+    print("Shutdown complete.")
+    sys.exit(0)
+
+# Register the signal handler for SIGINT (Ctrl+C)
+signal.signal(signal.SIGINT, signal_handler)
+
 if __name__ == "__main__":
     # Add command line argument parsing
     parser = argparse.ArgumentParser(description='Drone telemetry simulator')
     parser.add_argument('--dry-run', action='store_true', 
                         help='Run in dry run mode - print data but do not send to Kafka')
+    parser.add_argument('--timeout', type=int, default=60,
+                        help='Timeout in seconds for the simulation to run (default: 60)')
     args = parser.parse_args()
     
     if args.dry_run:
         print("Running in DRY RUN mode - data will not be sent to Kafka")
 
     db_client.create_table_if_not_exist(DroneDelivery)
+
+    print(f"Dry run mode: {args.dry_run}")
     
     # Configuration parameters
     num_drones = 10  # Number of drones to simulate
@@ -378,6 +404,7 @@ if __name__ == "__main__":
     # Generate drone IDs (range from 1 to 1000)
     drone_ids = random.sample(range(1, num_drones+1), num_drones)
     
+    normal_count = 1
     # Allocate drone IDs to different categories
     normal_drones = drone_ids[:normal_count]
     error_drones = drone_ids[normal_count:normal_count+error_count]
@@ -394,11 +421,6 @@ if __name__ == "__main__":
     print(f"Charging drones: {charging_drones}")
     print(f"Maintenance drones: {maintenance_drones}")
 
-
-
-
-
-    
     # Handle normal deliveries and deliveries with hardware errors
     delivery_tasks = []
     for drone_id in normal_drones:
@@ -411,21 +433,49 @@ if __name__ == "__main__":
         delivery_tasks.append((order, True))  # Include hardware errors
         print(f"Created delivery with potential error for drone_{drone_id}")
 
-    
-    # Use ThreadPoolExecutor to stream telemetry for each delivery task in parallel
-    with ThreadPoolExecutor(max_workers=num_drones) as executor:
+    # Make executor global so signal handler can access it
+    # global executor, futures
+    executor = ThreadPoolExecutor(max_workers=num_drones)
+    futures = []
+    try:
         # Start delivery simulations
         for order, include_errors in delivery_tasks:
-            executor.submit(stream_drone_telemetry, order, include_hardware_errors=include_errors, dry_run=args.dry_run)
+            futures.append(executor.submit(stream_drone_telemetry, order, include_hardware_errors=include_errors, dry_run=args.dry_run))
         
         # Start charging simulations
         for drone_id in charging_drones:
             lat, lon = random_bangalore_location()
-            executor.submit(generate_charging_telemetry, drone_id, lat, lon, dry_run=args.dry_run)
+            futures.append(executor.submit(generate_charging_telemetry, drone_id, lat, lon, dry_run=args.dry_run))
             print(f"Started charging simulation for drone_{drone_id}")
         
         # Start maintenance simulations
         for drone_id in maintenance_drones:
             lat, lon = random_bangalore_location()
-            executor.submit(generate_maintenance_telemetry, drone_id, lat, lon, dry_run=args.dry_run)
+            futures.append(executor.submit(generate_maintenance_telemetry, drone_id, lat, lon, dry_run=args.dry_run))
             print(f"Started maintenance simulation for drone_{drone_id}")
+        
+        print("Simulation running. Press Ctrl+C to stop.")
+    
+        done, not_done = wait(futures)
+        
+        # Cancel any tasks that didn't complete within the timeout
+        for future in not_done:
+            future.cancel()
+            
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Shutting down...")
+        # The signal handler will handle the cleanup
+    finally:
+        # Cleanup if not already handled by signal handler
+        if executor:
+            executor.shutdown(wait=False)
+        
+        if not args.dry_run and producer is not None:
+            try:
+                producer.flush(timeout=5)
+                producer.close(timeout=5)
+            except Exception as e:
+                print(f"Error closing Kafka producer: {e}")
+        
+        print("Simulation complete.")
+        sys.exit(0)
