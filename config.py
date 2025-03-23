@@ -4,6 +4,8 @@ from db_utils.postgres_db import PGClient
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
 
+
+from cassandra_utils.cassandra_utils import CassandraClient
 load_dotenv()
 
 
@@ -23,6 +25,8 @@ db_client = PGClient(
 )
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092").split(",")
 
+print(KAFKA_BOOTSTRAP_SERVERS)
+
 # Try to create Kafka producer, set to None if no brokers available
 KAFKA_PRODUCER = None
 try:
@@ -34,7 +38,17 @@ except NoBrokersAvailable:
     print("Warning: No Kafka brokers available. KAFKA_PRODUCER set to None.")
 
 
-DRONE_TELEMETRY_TOPIC = "drone-telemetry"
+DRONE_TELEMETRY_TOPIC = "drone_telemetry"
+DRONE_RECENT_ACTIVITY_TOPIC = "drone_recent_activity"
+DRONE_STATUS_TOPIC = "drone_status"
+
+
+cassandra_client = CassandraClient(
+    hosts=["localhost"],
+    keyspace="aerodronefleet",
+    port=9042
+)
+                        
 
 
 

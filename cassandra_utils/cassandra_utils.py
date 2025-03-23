@@ -1,9 +1,8 @@
 from cassandra.cluster import Cluster
-from cassandra.io.asyncioreactor import AsyncioConnection
-
+import asyncio
 
 class CassandraClient:
-    """Class for Cassandra database operations using asyncio"""
+    """Class for Cassandra database operations using synchronous connection"""
     
     def __init__(self, hosts, keyspace="aerodronefleet", port=9042):
         """Initialize the client - cluster is created immediately"""
@@ -11,42 +10,56 @@ class CassandraClient:
         self.port = port
         self.keyspace = keyspace
         
-        # Create cluster with async connection class right away
+        # Create cluster with standard connection
         self.cluster = Cluster(
             self.hosts, 
             port=self.port,
-            connection_class=AsyncioConnection
+            connect_timeout=15 
         )
         
-        # We'll initialize the keyspace in the async init method
         self._keyspace_initialized = False
+        self.initialize_keyspace()
     
-    async def async_init(self):
-        """Async initialization - must be called after creating the object"""
+    def initialize_keyspace(self):
+        """Initialize keyspace - called automatically during initialization"""
         if not self._keyspace_initialized:
-            # Create temporary session just for keyspace setup
-            temp_session = await self.cluster.connect_async()
+            # Create temporary session without keyspace
+            temp_session = self.cluster.connect()
             
             # Create keyspace if it doesn't exist
-            await temp_session.execute_async("""
+            create_keyspace_query = """
                 CREATE KEYSPACE IF NOT EXISTS drone_telemetry
                 WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
-            """)
+            """
+            temp_session.execute(create_keyspace_query)
             
             # Close this temporary session
-            await temp_session.shutdown()
+            temp_session.shutdown()
             self._keyspace_initialized = True
     
-    async def get_new_async_session(self):
-        """Create and return a brand new session"""
+    def get_session(self):
+        """Create and return a new session"""
         if not self._keyspace_initialized:
             # Initialize if not done yet
-            await self.async_init()
+            self.initialize_keyspace()
             
-        new_session = await self.cluster.connect_async(self.keyspace)
-        return new_session
+        # Connect with keyspace
+        session = self.cluster.connect(self.keyspace)
+        return session
     
-    async def close(self):
+    # async def execute_async_query(self, query, params):
+    #     loop = asyncio.get_event_loop()
+    #     future = self.session.execute_async(query, params)
+        
+    #     # Convert the Cassandra future to an asyncio future
+    #     return await loop.run_in_executor(
+    #         None,
+    #         lambda: future.result()
+    #     )
+    
+    def close(self):
         """Close the cluster connection"""
         if self.cluster:
             self.cluster.shutdown()
+            
+

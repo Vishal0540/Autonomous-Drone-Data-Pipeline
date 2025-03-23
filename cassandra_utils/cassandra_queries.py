@@ -4,37 +4,38 @@ from cassandra.cluster import Cluster
 class BaseCassandraQueries(ABC):
     CREATE_TABLE_QUERY = None
 
-    """Abstract base class for async Cassandra queries"""
+    """Abstract base class for Cassandra queries"""
     def __init__(self, session):
         self.session = session
-        # Note: We don't call create_table here directly in async version
+        # Create table by default when initializing
+        self.create_table()
 
-    async def create_table(self):
+    def create_table(self):
         """Create table if it doesn't exist"""
-        await self.session.execute_async(self.CREATE_TABLE_QUERY)
+        self.session.execute(self.CREATE_TABLE_QUERY)
     
     @abstractmethod
-    async def insert_data(self, data):
+    def insert_data(self, data):
         """Abstract method to insert data"""
         pass
 
 
-class DroneStatusQueries(AsyncBaseCassandraQueries):
+class DroneStatusQueries(BaseCassandraQueries):
     """Class containing async queries for drone telemetry table"""
     
     CREATE_TABLE_QUERY = """
         CREATE TABLE IF NOT EXISTS drone_status (
             drone_id int,
-            battery_percentage double,
-            latitude double,
-            longitude double,
-            altitude double,
-            operational_status text,
-            hardware_error text,
-            payload_weight_kg double,
+            battery_percentage float,
+            latitude float,
+            longitude float,
+            altitude float,
+            operational_status int,
+            hardware_error int,
+            payload_weight_kg float,
             timestamp_utc bigint,
-            horizontal_speed_mps double,
-            vertical_speed_mps double,
+            horizontal_speed_mps float,
+            vertical_speed_mps float,
             active_order_id text,
             PRIMARY KEY (drone_id)
         )
@@ -48,9 +49,9 @@ class DroneStatusQueries(AsyncBaseCassandraQueries):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     
-    async def insert_data(self, drone_status):
-        """Insert drone status data asynchronously"""
-        await self.session.execute_async(self.INSERT_QUERY, (
+    def insert_data(self, drone_status):
+        """Insert drone status data"""
+        self.session.execute(self.INSERT_QUERY, (
             drone_status.drone_id,
             drone_status.battery_percentage,
             drone_status.latitude,
@@ -66,7 +67,7 @@ class DroneStatusQueries(AsyncBaseCassandraQueries):
         ))
 
 
-class DroneRecentActivityQueries(AsyncBaseCassandraQueries):
+class DroneRecentActivityQueries(BaseCassandraQueries):
     """Class containing async queries for drone recent activity table"""
     
     CREATE_TABLE_QUERY = """
@@ -86,8 +87,8 @@ class DroneRecentActivityQueries(AsyncBaseCassandraQueries):
         VALUES (%s, %s, %s, %s, %s)
     """
 
-    async def insert_data(self, activity_data):
-        """Insert drone activity data asynchronously"""
+    def insert_data(self, activity_data):
+        """Insert drone activity data"""
         points_list = []
         
         for point in activity_data.recent_points:
@@ -102,7 +103,7 @@ class DroneRecentActivityQueries(AsyncBaseCassandraQueries):
                 'timestamp': float(point.timestamp)
             })
             
-        await self.session.execute_async(self.INSERT_QUERY, (
+        self.session.execute(self.INSERT_QUERY, (
             activity_data.drone_id,
             points_list,
             activity_data.avg_vertical_speed,
