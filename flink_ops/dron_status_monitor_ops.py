@@ -13,7 +13,7 @@ from pydantic_models.flink_streaming_models import ActivityPoint, RecentActivity
 
 class RecentDroneStatus(ReduceFunction):
     def reduce(self, value1: DroneTelemetry, value2: DroneTelemetry):
-        return value2.model_dump_json()
+        return value2
 
 
 

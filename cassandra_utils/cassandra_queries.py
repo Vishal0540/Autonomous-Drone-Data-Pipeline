@@ -100,7 +100,7 @@ class DroneRecentActivityQueries(BaseCassandraQueries):
                 'battery_percentage': point.battery_percentage,
                 'horizontal_speed': point.horizontal_speed,
                 'vertical_speed': point.vertical_speed,
-                'timestamp': float(point.timestamp)
+                'timestamp_utc': float(point.timestamp_utc)
             })
             
         self.session.execute(self.INSERT_QUERY, (

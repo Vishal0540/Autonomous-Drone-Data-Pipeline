@@ -5,23 +5,25 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import cassandra_client, DRONE_RECENT_ACTIVITY_TOPIC, KAFKA_BOOTSTRAP_SERVERS
-from cassandra_utils.cassandra_queries import DroneActivityQueries
-from aiokafka import AIOKafkaConsumer
-
+from cassandra_utils.cassandra_queries import DroneRecentActivityQueries
+from aiokafka import AIOKafkaConsumer           
+from pydantic_models.flink_streaming_models import RecentActivity
 
 class DroneActivityTracker:
-    """Consumer for tracking drone recent activities using asyncio"""
     
     def __init__(self, cassandra_client):
         self.cassandra_session = cassandra_client.get_session()
-        self.drone_activity_queries = DroneActivityQueries(self.cassandra_session)
+        self.drone_activity_queries = DroneRecentActivityQueries(self.cassandra_session)
         self.consumer = None
 
     async def setup_consumer(self):
         self.consumer = AIOKafkaConsumer(
             DRONE_RECENT_ACTIVITY_TOPIC,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+            group_id='drone_recent_activity_consumer_group',
+            auto_offset_reset='earliest',
+            enable_auto_commit=True
         )
         await self.consumer.start()
         
@@ -34,14 +36,14 @@ class DroneActivityTracker:
             async for message in self.consumer:
                 print(f"Received activity: {message.value}")
                 try:    
-                    await self.process_message(message.value)
+                    self.process_message(message.value)
                 except Exception as e:
                     print(f"Error processing activity: {e}")
         finally:
             await self.consumer.stop()
             
-    async def process_message(self, activity_data):
-        await self.drone_activity_queries.insert_drone_activity(activity_data)
+    def process_message(self, activity_data):
+        self.drone_activity_queries.insert_data(RecentActivity(**activity_data))
 
 
 async def main():
