@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+message DroneTelemetryProto {
+  int32 drone_id = 1;
+  double battery_percentage = 2;
+  double latitude = 3;
+  double longitude = 4;
+  double altitude = 5;
+  int32 operational_status = 6;
+  int32 hardware_error = 7;
+  double payload_weight_kg = 8;
+  int64 timestamp_utc = 9;
+  double horizontal_speed_mps = 10;
+  double vertical_speed_mps = 11;
+  string active_order_id = 12;
+} 
