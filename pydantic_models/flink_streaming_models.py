@@ -17,3 +17,13 @@ class RecentActivity(BaseModel):
     avg_vertical_speed: float
     avg_horizontal_speed: float
     last_updated: int
+
+
+class RedZoneAlert(BaseModel):
+    drone_id: int
+    delivery_order_id: str
+    zone_id: int
+    current_distance: float
+    direction_confidence: float
+    timestamp: int
+    is_active: bool = True

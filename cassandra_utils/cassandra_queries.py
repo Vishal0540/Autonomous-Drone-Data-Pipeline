@@ -110,3 +110,41 @@ class DroneRecentActivityQueries(BaseCassandraQueries):
             activity_data.avg_horizontal_speed,
             activity_data.last_updated
         ))
+
+
+class RedZoneAlertQueries(BaseCassandraQueries):
+    """Class containing async queries for red zone alert table"""
+    
+    CREATE_TABLE_QUERY = """
+        CREATE TABLE IF NOT EXISTS red_zone_alerts (
+            alert_id text,
+            drone_id int,
+            delivery_order_id text,
+            zone_id int,
+            current_distance float,
+            direction_confidence float,
+            timestamp bigint,
+            is_active boolean,
+            PRIMARY KEY (alert_id)
+        )
+    """
+    
+    INSERT_QUERY = """
+        INSERT INTO red_zone_alerts
+        (alert_id, drone_id, delivery_order_id, zone_id, current_distance, direction_confidence, timestamp, is_active)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+
+    def insert_data(self, alert_data):
+        """Insert red zone alert data"""
+        alert_id = f"{alert_data.drone_id}_{alert_data.delivery_order_id}"
+        self.session.execute(self.INSERT_QUERY, (
+            alert_id,
+            alert_data.drone_id,
+            alert_data.delivery_order_id,
+            alert_data.zone_id,
+            alert_data.current_distance,
+            alert_data.direction_confidence,
+            alert_data.timestamp,                                                                   
+            alert_data.is_active
+        ))

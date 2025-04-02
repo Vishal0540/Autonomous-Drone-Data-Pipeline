@@ -11,6 +11,10 @@ import signal
 
 from pydantic import BaseModel
 from sqlalchemy import create_engine
+from shapely import wkb
+from geoalchemy2.shape import to_shape
+import shapely.wkb
+import binascii
 
 # Add this import for better error handling
 from kafka.errors import KafkaError, KafkaTimeoutError
@@ -18,11 +22,17 @@ from kafka.errors import KafkaError, KafkaTimeoutError
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db_models.drone_deliveries import DroneDelivery
-from config import db_client, DRONE_TELEMETRY_TOPIC, KAFKA_PRODUCER as producer
+from db_models.zones_model import RedZone  # Add import for RedZone model
+from config import db_client, DRONE_TELEMETRY_TOPIC, KAFKA_PROTOBUFF_PRODUCER as producer
 from enums.drone_enums import OperationalStatus, HardwareError
 from pydantic_models.drone_models import DeliveryOrder, Coordinates, DroneTelemetry
 
 topic_name = DRONE_TELEMETRY_TOPIC
+
+
+global rdzon , allp_pon
+rdzon = None
+allp_pon = []
 
 
 # Update base stations for charging and maintenance locations
@@ -90,20 +100,95 @@ def destination_point(lat, lon, distance_km, bearing):
     
     return lat2, lon2
 
-def create_delivery_order(drone_id):
+def get_red_zones_from_db():
+    """
+    Query red zones from the database.
+    Returns a list of red zone polygons as coordinate lists.
+    """
+    red_zone_polygons = []
+    
+    try:
+        with db_client.session_scope() as session:
+            red_zones = session.query(RedZone).all()
+            print(f"Found {len(red_zones)} red zones")
+            
+            for red_zone in red_zones:
+                print(f"Red zone ID: {red_zone.zone_id}")
+                shape = to_shape(red_zone.polygon)
+                print(f"Polygon WKT: {shape.wkt}")
+                coords = list(shape.exterior.coords)
+                print(f"Polygon coordinates: {coords}")
+                red_zone_polygons.append(coords)
+    except Exception as e:
+        print(f"Error querying red zones: {e}")
+        red_zone_polygons = [
+            [(77.61066067082291, 12.976302962908646),
+             (77.605696353431, 12.980948526681702),
+             (77.60033235450481, 12.980948117807472),
+             (77.59591854689921, 12.976302962908646),
+             (77.59936038725937, 12.96997431135739),
+             (77.60614263809597, 12.970884411421205),
+             (77.61066067082291, 12.976302962908646)]
+        ]
+    
+    return red_zone_polygons
+
+def create_delivery_order(drone_id, use_red_zone=False, red_zone_id=None):
+    global rdzon
     """
     Create a delivery order record using Pydantic models.
+    If use_red_zone is True, create a path that passes through a red zone.
     """
     order_created_at = get_utc_timestamp_int()
     pickup_timestamp = get_utc_timestamp_int()
     delivery_timestamp = 0  # Not set until delivery completes
     
-    # Generate pickup coordinate
-    pickup_lat, pickup_lon = random_bangalore_location()
-    # Generate a random trip distance (in km) and bearing to compute delivery coordinate
-    trip_distance_km = random.uniform(1, 5)
-    bearing = random.uniform(0, 360)
-    delivery_lat, delivery_lon = destination_point(pickup_lat, pickup_lon, trip_distance_km, bearing)
+    if use_red_zone:
+        # Get red zones from database
+        red_zone_polygons = get_red_zones_from_db()
+        
+        if not red_zone_polygons:
+            print("No red zones found, using random coordinates")
+            pickup_lat, pickup_lon = random_bangalore_location()
+            trip_distance_km = random.uniform(1, 5)
+            bearing = random.uniform(0, 360)
+            delivery_lat, delivery_lon = destination_point(pickup_lat, pickup_lon, trip_distance_km, bearing)
+        else:
+            # Select a red zone (either specified by ID or random)
+            zone_index = 0  # Default to first zone
+            if red_zone_id is not None and 0 <= red_zone_id < len(red_zone_polygons):
+                zone_index = red_zone_id
+            elif len(red_zone_polygons) > 1:
+                zone_index = random.randint(0, len(red_zone_polygons) - 1)
+            
+            selected_zone = red_zone_polygons[zone_index]
+
+            print(f"Selected red zone: {selected_zone}")
+            rdzon =  selected_zone
+            
+            # Calculate center of the red zone
+            lons, lats = zip(*selected_zone)
+            center_lon = sum(lons) / len(lons)
+            center_lat = sum(lats) / len(lats)
+            
+            # Create pickup and delivery points far from the zone (3-5km away)
+            # in opposite directions to ensure path crosses the zone
+            bearing1 = random.uniform(0, 180)  # First random direction
+            bearing2 = bearing1 + 180  # Opposite direction
+            
+            # Generate points 5km away from center in opposite directions
+            pickup_lat, pickup_lon = destination_point(center_lat, center_lon, 5, bearing1)
+            delivery_lat, delivery_lon = destination_point(center_lat, center_lon, 5, bearing2)
+            
+            # Calculate straight-line distance
+            trip_distance_km = 10.0  # Approximately 5km + 5km
+    else:
+        # Generate pickup coordinate
+        pickup_lat, pickup_lon = random_bangalore_location()
+        # Generate a random trip distance (in km) and bearing to compute delivery coordinate
+        trip_distance_km = random.uniform(1, 5)
+        bearing = random.uniform(0, 360)
+        delivery_lat, delivery_lon = destination_point(pickup_lat, pickup_lon, trip_distance_km, bearing)
     
     package_weight = round(random.uniform(1, 10), 2)
     
@@ -119,7 +204,8 @@ def create_delivery_order(drone_id):
         delivery_timestamp_utc=delivery_timestamp,
         delivery_status="IN_PROGRESS",
         order_created_at_utc=order_created_at,
-        trip_distance_km=trip_distance_km
+        trip_distance_km=trip_distance_km,
+        is_red_zone_trip=use_red_zone  # Add flag to indicate red zone trip
     )
     
     # Insert into database
@@ -148,6 +234,7 @@ def insert_delivery_to_db(delivery_order):
         session.add(db_delivery)
 
 def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_alt=100, include_hardware_errors=False, dry_run=False):
+    global allp_pon
     try:
         """
         Simulate and stream drone telemetry data using the delivery order.
@@ -172,7 +259,7 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
 
         battery = 100.0  # initial battery percentage
         payload_weight = delivery_order.package_weight_kg
-        operational_status = OperationalStatus.IN_DELIVERY
+        operational_status = OperationalStatus.IN_DELIVERY.value
         ascend_time = flight_time * 0.1
         descend_time = flight_time * 0.1
         cruise_time = flight_time - ascend_time - descend_time
@@ -229,7 +316,7 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
             
             # If hardware error is enabled and we've reached the middle point, stop the flight
             if include_hardware_errors and t >= middle_point:
-                operational_status = OperationalStatus.HARDWARE_ALERT
+                operational_status = OperationalStatus.HARDWARE_ALERT.value
                 
                 telemetry = DroneTelemetry(
                     drone_id=int(drone_id),
@@ -237,7 +324,7 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
                     latitude=current_lat,
                     longitude=current_lon,
                     altitude=round(alt, 2),
-                    operational_status=operational_status,
+                    operational_status=OperationalStatus.HARDWARE_ALERT,
                     hardware_error=hardware_error,
                     payload_weight_kg=payload_weight,
                     timestamp_utc=get_utc_timestamp_int(),
@@ -246,14 +333,15 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
                     active_order_id=delivery_order.delivery_order_id
                 )
                 print(telemetry.model_dump_json())
+                print(telemetry.to_protobuf())
                 if not dry_run:
-                    future = producer.send(topic_name, telemetry.model_dump_json())
+                    future = producer.send(topic_name, telemetry.to_protobuf())
                 break
             
-            operational_status = OperationalStatus.IN_DELIVERY
+            operational_status = OperationalStatus.IN_DELIVERY.value
                 
             if t == flight_time:
-                operational_status = OperationalStatus.IDLE
+                operational_status = OperationalStatus.IDLE.value
                 horizontal_speed = 0  # Landed, so speed is zero
                 vertical_speed = 0
 
@@ -269,17 +357,21 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
                 timestamp_utc=get_utc_timestamp_int(),
                 horizontal_speed_mps=round(horizontal_speed, 2),
                 vertical_speed_mps=round(vertical_speed, 2),
-                active_order_id=delivery_order.delivery_order_id if operational_status == OperationalStatus.IN_DELIVERY else ""
+                active_order_id=delivery_order.delivery_order_id if operational_status == OperationalStatus.IN_DELIVERY.value else ""
             )
-            print(telemetry.model_dump_json())
+            # print(telemetry.model_dump_json())
 
             if not dry_run:
                 print(topic_name)
                 input("Press Enter to continue")
-                future = producer.send(topic_name, telemetry.model_dump_json())
+                print(telemetry.model_dump())
+                print(telemetry.to_protobuf().SerializeToString())
+                
+                future = producer.send(topic_name, telemetry.to_protobuf())
                 time.sleep(sample_rate)
                 
             # Store current values for next iteration
+            allp_pon.append(telemetry.model_dump_json())
             prev_alt = alt
             prev_lat = current_lat
             prev_lon = current_lon
@@ -298,9 +390,9 @@ def generate_charging_telemetry(drone_id, lat, lon, duration=60, sample_rate=5, 
         # Battery charges from 20% to 95% over the duration
         battery = 20.0 + (75.0 * t / duration)
         if battery >= 95.0:
-            operational_status = OperationalStatus.IDLE
+            operational_status = OperationalStatus.IDLE.value
         else:
-            operational_status = OperationalStatus.CHARGING
+            operational_status = OperationalStatus.CHARGING.value
         print(t)
         telemetry = DroneTelemetry(
             drone_id=int(drone_id),
@@ -318,8 +410,9 @@ def generate_charging_telemetry(drone_id, lat, lon, duration=60, sample_rate=5, 
         )
         
         print(telemetry.model_dump_json())
+        print(telemetry.to_protobuf())
         if not dry_run:
-            future = producer.send(topic_name, telemetry.model_dump())
+            future = producer.send(topic_name, telemetry.to_protobuf())
             time.sleep(sample_rate)
                 
 
@@ -331,10 +424,10 @@ def generate_maintenance_telemetry(drone_id, lat, lon, duration=120, sample_rate
     for t in range(0, duration, sample_rate):
         # For the last sample, clear the error
         if t >= duration - sample_rate:
-            operational_status = OperationalStatus.IDLE
+            operational_status = OperationalStatus.IDLE.value
             current_error = None
         else:
-            operational_status = OperationalStatus.MAINTENANCE
+            operational_status = OperationalStatus.MAINTENANCE.value
             current_error = hardware_error
             
         telemetry = DroneTelemetry(
@@ -353,8 +446,9 @@ def generate_maintenance_telemetry(drone_id, lat, lon, duration=120, sample_rate
         )
         
         print(telemetry.model_dump_json())
+        print(telemetry.to_protobuf())
         if not dry_run:
-            future = producer.send(topic_name, telemetry.model_dump())
+            future = producer.send(topic_name, telemetry.to_protobuf())
             time.sleep(sample_rate)
 
 # Add these global variables at the top level
@@ -379,6 +473,10 @@ if __name__ == "__main__":
                         help='Run in dry run mode - print data but do not send to Kafka')
     parser.add_argument('--timeout', type=int, default=60,
                         help='Timeout in seconds for the simulation to run (default: 60)')
+    parser.add_argument('--use-red-zone', action='store_true',
+                        help='Generate trips that pass through red zones')
+    parser.add_argument('--red-zone-id', type=int, default=None,
+                        help='Specific red zone ID to use (default: random)')
     args = parser.parse_args()
     
     if args.dry_run:
@@ -424,12 +522,12 @@ if __name__ == "__main__":
     # Handle normal deliveries and deliveries with hardware errors
     delivery_tasks = []
     for drone_id in normal_drones:
-        order = create_delivery_order(drone_id)
+        order = create_delivery_order(drone_id, use_red_zone=args.use_red_zone, red_zone_id=args.red_zone_id)
         delivery_tasks.append((order, False))  # No hardware errors
         print(f"Created normal delivery for drone_{drone_id}")
     
     for drone_id in error_drones:
-        order = create_delivery_order(drone_id)
+        order = create_delivery_order(drone_id, use_red_zone=args.use_red_zone, red_zone_id=args.red_zone_id)
         delivery_tasks.append((order, True))  # Include hardware errors
         print(f"Created delivery with potential error for drone_{drone_id}")
 
@@ -461,7 +559,13 @@ if __name__ == "__main__":
         # Cancel any tasks that didn't complete within the timeout
         for future in not_done:
             future.cancel()
-            
+
+        print(allp_pon)
+        import json
+        with open("allp_pon.json", "w") as f:
+            json.dump(allp_pon, f)
+        print(rdzon)
+        
     except KeyboardInterrupt:
         print("\nInterrupted by user. Shutting down...")
         # The signal handler will handle the cleanup

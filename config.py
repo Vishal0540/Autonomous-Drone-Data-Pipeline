@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from db_utils.postgres_db import PGClient
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
+import base64
 
 
 from cassandra_utils.cassandra_utils import CassandraClient
@@ -37,11 +38,16 @@ try:
 except NoBrokersAvailable:
     print("Warning: No Kafka brokers available. KAFKA_PRODUCER set to None.")
 
+KAFKA_PROTOBUFF_PRODUCER = KafkaProducer(
+    bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+    value_serializer=lambda v: base64.b64encode(v.SerializeToString()).decode('utf-8').encode('utf-8')
+)
 
+    
 DRONE_TELEMETRY_TOPIC = "drone_telemetry"
 DRONE_RECENT_ACTIVITY_TOPIC = "drone_recent_activity"
 DRONE_STATUS_TOPIC = "drone_status"
-
+RED_ZONE_ALERT_TOPIC = "red_zone_alerts"
 
 cassandra_client = CassandraClient(
     hosts=["localhost"],
