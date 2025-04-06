@@ -30,9 +30,6 @@ from pydantic_models.drone_models import DeliveryOrder, Coordinates, DroneTeleme
 topic_name = DRONE_TELEMETRY_TOPIC
 
 
-global rdzon , allp_pon
-rdzon = None
-allp_pon = []
 
 
 # Update base stations for charging and maintenance locations
@@ -134,7 +131,6 @@ def get_red_zones_from_db():
     return red_zone_polygons
 
 def create_delivery_order(drone_id, use_red_zone=False, red_zone_id=None):
-    global rdzon
     """
     Create a delivery order record using Pydantic models.
     If use_red_zone is True, create a path that passes through a red zone.
@@ -164,7 +160,7 @@ def create_delivery_order(drone_id, use_red_zone=False, red_zone_id=None):
             selected_zone = red_zone_polygons[zone_index]
 
             print(f"Selected red zone: {selected_zone}")
-            rdzon =  selected_zone
+            # rdzon =  selected_zone
             
             # Calculate center of the red zone
             lons, lats = zip(*selected_zone)
@@ -234,7 +230,6 @@ def insert_delivery_to_db(delivery_order):
         session.add(db_delivery)
 
 def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_alt=100, include_hardware_errors=False, dry_run=False):
-    global allp_pon
     try:
         """
         Simulate and stream drone telemetry data using the delivery order.
@@ -335,7 +330,11 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
                 print(telemetry.model_dump_json())
                 print(telemetry.to_protobuf())
                 if not dry_run:
-                    future = producer.send(topic_name, telemetry.to_protobuf())
+                    future = producer.send(
+                        topic_name,
+                        key=str(drone_id).encode('utf-8'),
+                        value=telemetry.to_protobuf()
+                    )
                 break
             
             operational_status = OperationalStatus.IN_DELIVERY.value
@@ -363,15 +362,21 @@ def stream_drone_telemetry(delivery_order, drone_speed=10, sample_rate=1, max_al
 
             if not dry_run:
                 print(topic_name)
-                input("Press Enter to continue")
+                # input("Press Enter to continue")
                 print(telemetry.model_dump())
-                print(telemetry.to_protobuf().SerializeToString())
+                # print(telemetry.to_protobuf().SerializeToString())
                 
-                future = producer.send(topic_name, telemetry.to_protobuf())
+                # Use drone_id as the partition key
+                future = producer.send(
+                    topic_name,
+                    key=str(drone_id).encode('utf-8'),
+                    value=telemetry.to_protobuf()
+                )
                 time.sleep(sample_rate)
                 
             # Store current values for next iteration
-            allp_pon.append(telemetry.model_dump_json())
+
+
             prev_alt = alt
             prev_lat = current_lat
             prev_lon = current_lon
@@ -412,7 +417,11 @@ def generate_charging_telemetry(drone_id, lat, lon, duration=60, sample_rate=5, 
         print(telemetry.model_dump_json())
         print(telemetry.to_protobuf())
         if not dry_run:
-            future = producer.send(topic_name, telemetry.to_protobuf())
+            future = producer.send(
+                topic_name,
+                key=str(drone_id).encode('utf-8'),
+                value=telemetry.to_protobuf()
+            )
             time.sleep(sample_rate)
                 
 
@@ -448,7 +457,11 @@ def generate_maintenance_telemetry(drone_id, lat, lon, duration=120, sample_rate
         print(telemetry.model_dump_json())
         print(telemetry.to_protobuf())
         if not dry_run:
-            future = producer.send(topic_name, telemetry.to_protobuf())
+            future = producer.send(
+                topic_name,
+                key=str(drone_id).encode('utf-8'),
+                value=telemetry.to_protobuf()
+            )
             time.sleep(sample_rate)
 
 # Add these global variables at the top level
@@ -487,7 +500,7 @@ if __name__ == "__main__":
     print(f"Dry run mode: {args.dry_run}")
     
     # Configuration parameters
-    num_drones = 10  # Number of drones to simulate
+    num_drones = 20 # Number of drones to simulate
     percent_normal = 70  # Percentage of drones on normal delivery
     percent_hardware_error = 10  # Percentage of drones with hardware errors
     percent_charging = 10  # Percentage of drones charging
@@ -502,7 +515,7 @@ if __name__ == "__main__":
     # Generate drone IDs (range from 1 to 1000)
     drone_ids = random.sample(range(1, num_drones+1), num_drones)
     
-    normal_count = 1
+    # normal_count = 1
     # Allocate drone IDs to different categories
     normal_drones = drone_ids[:normal_count]
     error_drones = drone_ids[normal_count:normal_count+error_count]
@@ -510,9 +523,9 @@ if __name__ == "__main__":
     maintenance_drones = drone_ids[normal_count+error_count+charging_count:]
 
     # normal_drones = []
-    error_drones = []
-    charging_drones = []
-    maintenance_drones = []
+    # error_drones = []
+    # charging_drones = []
+    # maintenance_drones = []
 
     print(f"Normal drones: {normal_drones}")
     print(f"Error drones: {error_drones}")
@@ -560,11 +573,6 @@ if __name__ == "__main__":
         for future in not_done:
             future.cancel()
 
-        print(allp_pon)
-        import json
-        with open("allp_pon.json", "w") as f:
-            json.dump(allp_pon, f)
-        print(rdzon)
         
     except KeyboardInterrupt:
         print("\nInterrupted by user. Shutting down...")
