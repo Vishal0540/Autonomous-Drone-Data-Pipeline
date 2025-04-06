@@ -480,7 +480,6 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 if __name__ == "__main__":
-    # Add command line argument parsing
     parser = argparse.ArgumentParser(description='Drone telemetry simulator')
     parser.add_argument('--dry-run', action='store_true', 
                         help='Run in dry run mode - print data but do not send to Kafka')
@@ -490,6 +489,9 @@ if __name__ == "__main__":
                         help='Generate trips that pass through red zones')
     parser.add_argument('--red-zone-id', type=int, default=None,
                         help='Specific red zone ID to use (default: random)')
+    # Add new batch argument
+    parser.add_argument('--batch', type=int, default=1,
+                        help='Batch number (1: drones 0-100, 2: drones 101-200, etc.)')
     args = parser.parse_args()
     
     if args.dry_run:
@@ -499,33 +501,42 @@ if __name__ == "__main__":
 
     print(f"Dry run mode: {args.dry_run}")
     
+    # Calculate drone ID range based on batch
+    drones_per_batch = 60
+    start_id = (args.batch - 1) * drones_per_batch + 1
+    end_id = args.batch * drones_per_batch
+    print(f"Running batch {args.batch} with drone IDs from {start_id} to {end_id}")
+    
     # Configuration parameters
-    num_drones = 20 # Number of drones to simulate
-    percent_normal = 70  # Percentage of drones on normal delivery
-    percent_hardware_error = 10  # Percentage of drones with hardware errors
-    percent_charging = 10  # Percentage of drones charging
-    percent_maintenance = 10  # Percentage of drones in maintenance
-    
-    # Calculate counts based on percentages
-    normal_count = int(num_drones * percent_normal / 100)
-    error_count = int(num_drones * percent_hardware_error / 100)
-    charging_count = int(num_drones * percent_charging / 100)
-    maintenance_count = num_drones - normal_count - error_count - charging_count
-    
-    # Generate drone IDs (range from 1 to 1000)
-    drone_ids = random.sample(range(1, num_drones+1), num_drones)
-    
-    # normal_count = 1
-    # Allocate drone IDs to different categories
-    normal_drones = drone_ids[:normal_count]
-    error_drones = drone_ids[normal_count:normal_count+error_count]
-    charging_drones = drone_ids[normal_count+error_count:normal_count+error_count+charging_count]
-    maintenance_drones = drone_ids[normal_count+error_count+charging_count:]
-
-    # normal_drones = []
-    # error_drones = []
-    # charging_drones = []
-    # maintenance_drones = []
+    if args.use_red_zone:
+        # Only use 2 specific drones for red zone
+        num_drones = 2
+        drone_ids = [4000, 4002]
+        normal_drones = drone_ids
+        error_drones = []
+        charging_drones = []
+        maintenance_drones = []
+    else:
+        num_drones = drones_per_batch  # Number of drones to simulate in this batch
+        percent_normal = 70  # Percentage of drones on normal delivery
+        percent_hardware_error = 10  # Percentage of drones with hardware errors
+        percent_charging = 10  # Percentage of drones charging
+        percent_maintenance = 10  # Percentage of drones in maintenance
+        
+        # Calculate counts based on percentages
+        normal_count = int(num_drones * percent_normal / 100)
+        error_count = int(num_drones * percent_hardware_error / 100)
+        charging_count = int(num_drones * percent_charging / 100)
+        maintenance_count = num_drones - normal_count - error_count - charging_count
+        
+        # Generate sequential drone IDs for this batch
+        drone_ids = list(range(start_id, end_id + 1))
+        
+        # Allocate drone IDs to different categories
+        normal_drones = drone_ids[:normal_count]
+        error_drones = drone_ids[normal_count:normal_count+error_count]
+        charging_drones = drone_ids[normal_count+error_count:normal_count+error_count+charging_count]
+        maintenance_drones = drone_ids[normal_count+error_count+charging_count:]
 
     print(f"Normal drones: {normal_drones}")
     print(f"Error drones: {error_drones}")
