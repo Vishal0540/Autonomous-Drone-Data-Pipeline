@@ -8,17 +8,15 @@ from config import cassandra_client, RED_ZONE_ALERT_TOPIC, KAFKA_BOOTSTRAP_SERVE
 from cassandra_utils.cassandra_queries import RedZoneAlertQueries
 from aiokafka import AIOKafkaConsumer   
 from pydantic_models.flink_streaming_models import RedZoneAlert
+from kafka_consumers.base_consumer import AsyncBaseConsumer
 
 
-class RedZoneAlertConsumer:
+class RedZoneAlertConsumer(AsyncBaseConsumer):
     
     def __init__(self, cassandra_client):
         self.cassandra_session = cassandra_client.get_session()
         self.red_zone_alert_queries = RedZoneAlertQueries(self.cassandra_session)
-        self.consumer = None
-
-    async def setup_consumer(self):
-        self.consumer = AIOKafkaConsumer(
+        consumer = AIOKafkaConsumer(
             RED_ZONE_ALERT_TOPIC,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             value_deserializer=lambda x: json.loads(x.decode('utf-8')),
@@ -26,25 +24,18 @@ class RedZoneAlertConsumer:
             auto_offset_reset='earliest',
             enable_auto_commit=True
         )
-        await self.consumer.start()
-        
-    async def consume(self):
-        await self.setup_consumer()
+        super().__init__(consumer)
+
+    async def setup_consumer(self):
+        await self.kafka_consumer.start()
         print("Starting to process red zone alerts...")
         print(f"Red zone alert topic: {RED_ZONE_ALERT_TOPIC}")
-        
-        try:
-            async for message in self.consumer:
-                print(f"Received message: {message.value}")
-                try:    
-                    self.process_message(message.value)
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-        finally:
-            await self.consumer.stop()
             
-    def process_message(self, red_zone_alert_data):
-        self.red_zone_alert_queries.insert_data(RedZoneAlert(**red_zone_alert_data))
+    async def process_message(self, message: dict):
+        """Process individual red zone alert messages"""
+        print(f"Received message: {message}")
+        alert = RedZoneAlert(**message)
+        self.red_zone_alert_queries.insert_data(alert)
 
 
 async def main():

@@ -8,43 +8,34 @@ from config import cassandra_client, DRONE_STATUS_TOPIC, KAFKA_BOOTSTRAP_SERVERS
 from cassandra_utils.cassandra_queries import DroneStatusQueries
 from aiokafka import AIOKafkaConsumer
 from pydantic_models.drone_models import DroneTelemetry
+from typing import List
+from kafka_consumers.base_consumer import AsyncBatchConsumer
 
-
-class DroneStatusTracker:
+class DroneStatusTracker(AsyncBatchConsumer):
     
-    def __init__(self, cassandra_client):
+    def __init__(self, cassandra_client, batch_size: int = 70, batch_interval: int = 5):
         self.cassandra_session = cassandra_client.get_session()
         self.drone_status_queries = DroneStatusQueries(self.cassandra_session)
-        self.consumer = None
-
-    async def setup_consumer(self):
-        self.consumer = AIOKafkaConsumer(
+        consumer = AIOKafkaConsumer(
             DRONE_STATUS_TOPIC,
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-            group_id='drone_status_consumer_group',
+            group_id='drone_status_consumer_group', 
             auto_offset_reset='earliest',
             enable_auto_commit=True
         )
-        await self.consumer.start()
-        
-    async def consume(self):
-        await self.setup_consumer()
-        print("Starting to process drone telemetry...")
+        super().__init__(consumer, batch_size=batch_size, batch_interval=batch_interval)
+
+    async def setup_consumer(self):
+        await self.kafka_consumer.start()
+        print("Starting to process drone telemetry in batch mode...")
         print(f"Drone telemetry topic: {DRONE_STATUS_TOPIC}")
-        
-        try:
-            async for message in self.consumer:
-                print(f"Received message: {message.value}")
-                try:    
-                    self.process_message(message.value)
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-        finally:
-            await self.consumer.stop()
+        print(f"Batch size: {self.batch_size}, Batch interval: {self.batch_interval} seconds")
             
-    def process_message(self, drone_data):
-        self.drone_status_queries.insert_data(DroneTelemetry(**drone_data))
+    async def process_batch(self, messages: List[dict]):
+        """Process messages in batch"""
+        telemetry_objects = [DroneTelemetry(**msg) for msg in messages]
+        self.drone_status_queries.batch_insert(telemetry_objects)
 
 
 async def main():
